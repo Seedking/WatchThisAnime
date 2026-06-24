@@ -1,0 +1,15 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug Python with pixi",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "src",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": true,
+      "python": "${workspaceFolder}\\.pixi\\envs\\default\\python.exe"
+    }
+  ]
+}
