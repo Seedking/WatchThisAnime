@@ -38,7 +38,7 @@ pixi run test       # 运行测试（pytest）
 2. **业务服务层（`services/`）** —— MCP 调用的实现/入口函数合集，承载推荐编排等子函数。
 3. **持久化层（`storage/`）** —— SQLite 数据结构与 session 管理。
 4. **数据源层（`sources/`）** —— 获取 GitHub 上事先整理好的数据集，以及对接 Bangumi / 萌娘百科 / Jikan。
-5. **工具层（`utils/`）** —— `http_client_base` 集中处理 HTTP 请求。
+5. **工具层（`utils/`）** —— `base_api_client` 集中处理 HTTP 请求。
 
 ```
 src/
@@ -67,7 +67,7 @@ src/
 │   └── models.py                   # anime 主表(UUID PK) + 三张来源记录表 + user + anime_interactions + tag_interactions
 └── utils/                          # [5] 工具层
     ├── __init__.py
-    └── http_client_base.py         # BaseAPIClient 抽象基类
+    └── base_api_client.py          # BaseAPIClient 抽象基类
 tests/
 ├── __init__.py
 ├── conftest.py                     # pytest 共享 fixtures
@@ -90,7 +90,7 @@ tests/
 - **多表数据模型**：`anime` 主表使用 **UUID 主键** + 跨来源共享字段；每个来源（Bangumi / 萌娘百科 / Jikan）各有一张独立记录表，通过外键关联主表，来源 ID 在各自表内唯一（详见「数据模型」）。来源记录可后于主表存在，运行时逐步补全。UUID 主键便于同步 GitHub 上新增的映射记录时分配稳定标识。
 - **交互数据模型**：用户对番的行为与评分记录在 `anime_interactions`（含 `action` + `rating`），用户对标签/题材的偏好打分记录在 `tag_interactions`，两表解耦；`action` 保留用于用户状态分析，个性化阶段可同时利用两表。
 - **GitHub 数据集同步**：通过 `sources/github_dataset_client.py` 完成，服务器启动时执行首次同步（拉取 → 解析 → upsert 入库），并提供定时同步任务；同步只负责写 `anime` 主表与对应来源记录表。
-- **HTTP 客户端**：通过 `utils/http_client_base.py` 的 `BaseAPIClient` 抽象基类封装 httpx，子类（bangumi / moegirl / jikan / github_dataset client）只需定义 `base_url` 和 `default_headers`，内置统一超时和重试机制。
+- **HTTP 客户端**：通过 `utils/base_api_client.py` 的 `BaseAPIClient` 抽象基类封装 httpx，子类（bangumi / moegirl / jikan / github_dataset client）只需定义 `base_url` 和 `default_headers`，内置统一超时和重试机制。
 - **数据库**：SQLAlchemy 2.0 style + SQLite，通过 session factory 管理数据库会话。
 - **依赖注入**：在初始化阶段注入客户端和数据库实例，避免在 tool / service 函数内部直接创建依赖。
 
@@ -106,11 +106,14 @@ tests/
 
 > 一部 `anime` 可对应 0~3 条来源记录。GitHub 数据集通常只带部分来源 ID，写入时先 upsert 主表再 upsert 对应来源表。
 
-## 核心工具契约
+## 工具契约
 
 - `recommend_anime(...)`：聚合推荐工具，`user_id` 从 JWT 上下文取。内部按用户交互历史量判定阶段 → 调用冷启动或个性化子函数 → 返回聚合推荐列表。函数文档字符串作为 MCP 工具描述。
 - `record_user_interaction(anime_id, action, rating)`：用户行为反馈工具，`user_id` 从 JWT 上下文取。`anime_id` 为 `anime` 表 UUID 主键；`action ∈ {viewed, wishlisted}`；`rating` 整数 1-10 可空。写入 `anime_interactions`，为后续个性化推荐积累信号。
 - `search_anime(anime_name, anime_tag)`：模糊搜索工具，只读、无需鉴权。`anime_name` 跨主表 `canonical_title` / `title_jp` / `title_zh` 模糊匹配；`anime_tag`（字符串数组）按来源记录表 `tags` 筛选，与名称为 AND 关系（空数组则仅按名称）；返回匹配番剧列表（含 `anime.id` UUID 与命中来源摘要）。
+
+## Prompt 契约
+
 - **Prompt `recommend`**：用 `@mcp.prompt()` 定义，输出一段说明指导 LLM 如何使用推荐工具集——何时调用 `recommend_anime`、如何用 `record_user_interaction` 反馈、冷启动与个性化两阶段的区别等。
 
 ## 代码规范
