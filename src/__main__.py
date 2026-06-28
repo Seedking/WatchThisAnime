@@ -6,9 +6,12 @@
 
 from src.mcp import prompts, tools  # noqa: F401  注册工具与提示
 from src.mcp.server import mcp
+from src.storage.database import init_db
 
 
 def main() -> None:
+    # 启动时建表，确保 schema 先于服务对外（init_db 内部会导入 models 触发注册）。
+    init_db()
     mcp.run(transport="streamable-http")
 
 

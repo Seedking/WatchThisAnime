@@ -47,7 +47,7 @@ src/
 │   ├── __init__.py
 │   ├── server.py                   # FastMCP 实例 + JWT 鉴权中间件（解析 Bearer token）
 │   ├── auth.py                     # JWT 解析：Authorization: Bearer <JWT> → user_id (sub)
-│   ├── tools/__init__.py           # 统一注册点：recommend_anime, record_user_interaction, ...
+│   ├── tools/__init__.py           # 统一注册点：recommend_anime, record_user_interaction, recent_anime, search_anime
 │   ├── prompts/__init__.py         # 含 recommend prompt（指导 LLM 使用推荐工具）
 │   └── resources/__init__.py
 ├── services/                       # [2] 业务服务层（入口函数合集）
@@ -96,7 +96,7 @@ tests/
 
 ## 数据模型
 
-- `anime(id PK UUID, canonical_title, title_jp, title_zh, year, season, synopsis, created_at, updated_at)` —— 跨来源共享的中性元数据；UUID 由 GitHub 数据集同步时分配，保证稳定。
+- `anime(id PK UUID, canonical_title, title_jp, title_zh, airing_date, season)` —— 跨来源共享的中性元数据；UUID 由 GitHub 数据集同步时分配，保证稳定。
 - `bangumi_records(source_id UNIQUE, anime_id FK→anime.id(UUID), score, tags, cover, url, raw, updated_at)` —— Bangumi 来源专属字段。
 - `moegirl_records(source_id UNIQUE, anime_id FK→anime.id(UUID), ...)` —— 萌娘百科来源专属字段，结构与上同构。
 - `jikan_records(source_id UNIQUE, anime_id FK→anime.id(UUID), ...)` —— Jikan 来源专属字段，结构与上同构。
@@ -111,6 +111,7 @@ tests/
 - `recommend_anime(...)`：聚合推荐工具，`user_id` 从 JWT 上下文取。内部按用户交互历史量判定阶段 → 调用冷启动或个性化子函数 → 返回聚合推荐列表。函数文档字符串作为 MCP 工具描述。
 - `record_user_interaction(anime_id, action, rating)`：用户行为反馈工具，`user_id` 从 JWT 上下文取。`anime_id` 为 `anime` 表 UUID 主键；`action ∈ {viewed, wishlisted}`；`rating` 整数 1-10 可空。写入 `anime_interactions`，为后续个性化推荐积累信号。
 - `search_anime(anime_name, anime_tag)`：模糊搜索工具，只读、无需鉴权。`anime_name` 跨主表 `canonical_title` / `title_jp` / `title_zh` 模糊匹配；`anime_tag`（字符串数组）按来源记录表 `tags` 筛选，与名称为 AND 关系（空数组则仅按名称）；返回匹配番剧列表（含 `anime.id` UUID 与命中来源摘要）。
+- `recent_anime()`：最近动漫推荐工具，`user_id` 从 JWT 上下文取，不接收参数。返回最近番剧的推荐列表（本期为占位，返回空字符串）。
 
 ## Prompt 契约
 
