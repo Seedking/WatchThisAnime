@@ -13,7 +13,7 @@ pixi run code       # 在 VSCode 中打开项目
 pixi run test       # 运行测试（pytest）
 ```
 
-> **注意**：`pixi run inspect` 设置了 `DANGEROUSLY_OMIT_AUTH=true`，仅限本地交互式调试使用，不得用于生产环境。
+> **注意**：`pixi run inspect` 用于本地交互式调试，启动 MCP Inspector。
 
 ## 当前项目结构
 
@@ -45,15 +45,15 @@ src/
 ├── __main__.py                     # 入口：mcp.run(transport="streamable-http")
 ├── mcp/                            # [1] MCP 交互层
 │   ├── __init__.py
-│   ├── server.py                   # FastMCP 实例 + JWT 鉴权中间件（解析 Bearer token）
-│   ├── auth.py                     # JWT 解析：Authorization: Bearer <JWT> → user_id (sub)
+│   ├── server.py                   # FastMCP 实例
 │   ├── tools/__init__.py           # 统一注册点：recommend_anime, record_user_interaction, recent_anime, search_anime
 │   ├── prompts/__init__.py         # 含 recommend prompt（指导 LLM 使用推荐工具）
 │   └── resources/__init__.py
 ├── services/                       # [2] 业务服务层（入口函数合集）
 │   ├── __init__.py
+│   ├── user_service.py             # ensure_user：按外部传入 user_id 首次访问时创建用户
 │   ├── recommend_service.py        # 聚合 recommend_anime 的编排 + 冷启动/个性化子函数
-│   ├── interaction_service.py      # record_user_interaction 实现：JWT 上下文取 user_id，写 anime_interactions
+│   ├── interaction_service.py      # record_user_interaction 实现：写 anime_interactions
 │   └── search_service.py           # search_anime 实现：按名称 + 标签模糊搜索
 ├── sources/                        # [4] 数据源层
 │   ├── __init__.py
@@ -80,7 +80,7 @@ tests/
 ## 架构要点
 
 - **分层依赖**：`mcp/`（协议层）→ `services/`（业务服务层）→ `sources/`（数据源层）/ `storage/`（持久化层）→ `utils/`（工具层）。上层依赖下层，禁止跨层或反向依赖。
-- **鉴权与用户解析**：streamable-http 连接建立时，服务端读取 `Authorization: Bearer <JWT>` 头 → 校验并解码 JWT → 取 `sub` 声明作为 `user.id`（UUID）→ 在 `user` 表中 upsert（首次见到则创建）→ 将 `user_id` 注入工具调用上下文。`recommend_anime` 与 `record_user_interaction` 均从上下文取 `user_id`，**不接收 `user_id` 参数**。`user.username` 取 JWT claims 中的可读名（如 `name` / `preferred_username`），缺失则回落到 `sub`。不把整个 JWT 字符串作主键（JWT 带 `exp` 会刷新，作主键会导致身份漂移、历史断链）。
+- **用户解析（无鉴权层）**：服务端不做任何鉴权，用户身份由调用方在调用工具时以 `user_id` 字符串参数显式传入。`user.id` 为字符串主键（任意字符串用户标识），首次见到时由 `services/user_service.ensure_user` 创建 `user` 记录，后续直接复用。`recommend_anime`、`record_user_interaction`、`recent_anime` 均接收 `user_id` 参数；`search_anime` 只读、不需要 `user_id`。用户管理交由外部系统完成。
 - **MCP 交互层**：所有 tools / prompts / resources 在 `src/mcp/tools/__init__.py` 等统一 import 并注册到 server 实例。tool 函数仅做参数校验与转发，业务逻辑下沉到 `services/`。
 - **业务服务层**：`recommend_service.py` 承载 `recommend_anime` 的两阶段编排及其子函数；`interaction_service.py` 承载 `record_user_interaction` 的实现。
 - **`recommend_anime` 两阶段**：
@@ -100,7 +100,7 @@ tests/
 - `bangumi_records(source_id UNIQUE, anime_id FK→anime.id(UUID), score, tags, cover, url, raw, updated_at)` —— Bangumi 来源专属字段。
 - `moegirl_records(source_id UNIQUE, anime_id FK→anime.id(UUID), ...)` —— 萌娘百科来源专属字段，结构与上同构。
 - `jikan_records(source_id UNIQUE, anime_id FK→anime.id(UUID), ...)` —— Jikan 来源专属字段，结构与上同构。
-- `user(id PK UUID = JWT sub, username, created_at, updated_at)` —— 由 JWT 解析自动 upsert；`username` 取 claims 可读名，缺失回落 `sub`。
+- `user(id PK String, created_at, updated_at)` —— `id` 为外部传入的字符串用户标识，首次访问时由 `ensure_user` 创建；用户管理由外部系统完成。
 - `anime_interactions(id PK, user_id FK→user.id, anime_id FK→anime.id, action, rating, created_at)` —— `record_user_interaction` 写入此表，作用户对番的评分历史；`action ∈ {viewed, wishlisted}`（本期仅这两种），`rating` 整数 1-10 可空（`viewed`/`wishlisted` 未必伴随打分）。
 - `tag_interactions(id PK, user_id FK→user.id, tag, score 1-10, updated_at, UNIQUE(user_id, tag))` —— 用户对标签/题材的独立打分，与具体番剧解耦；录入入口计划中，待后续补充。
 
@@ -108,10 +108,10 @@ tests/
 
 ## 工具契约
 
-- `recommend_anime(...)`：聚合推荐工具，`user_id` 从 JWT 上下文取。内部按用户交互历史量判定阶段 → 调用冷启动或个性化子函数 → 返回聚合推荐列表。函数文档字符串作为 MCP 工具描述。
-- `record_user_interaction(anime_id, action, rating)`：用户行为反馈工具，`user_id` 从 JWT 上下文取。`anime_id` 为 `anime` 表 UUID 主键；`action ∈ {viewed, wishlisted}`；`rating` 整数 1-10 可空。写入 `anime_interactions`，为后续个性化推荐积累信号。
-- `search_anime(anime_name, anime_tag)`：模糊搜索工具，只读、无需鉴权。`anime_name` 跨主表 `canonical_title` / `title_jp` / `title_zh` 模糊匹配；`anime_tag`（字符串数组）按来源记录表 `tags` 筛选，与名称为 AND 关系（空数组则仅按名称）；返回匹配番剧列表（含 `anime.id` UUID 与命中来源摘要）。
-- `recent_anime()`：最近动漫推荐工具，`user_id` 从 JWT 上下文取，不接收参数。返回最近番剧的推荐列表（本期为占位，返回空字符串）。
+- `recommend_anime(user_id)`：聚合推荐工具，`user_id` 由调用方传入（字符串）。内部按用户交互历史量判定阶段 → 调用冷启动或个性化子函数 → 返回聚合推荐列表。函数文档字符串作为 MCP 工具描述。
+- `record_user_interaction(user_id, anime_id, action, rating)`：用户行为反馈工具，`user_id` 由调用方传入（字符串）。`anime_id` 为 `anime` 表 UUID 主键；`action ∈ {viewed, wishlisted}`；`rating` 整数 1-10 可空。写入 `anime_interactions`，为后续个性化推荐积累信号。
+- `search_anime(anime_name, anime_tag)`：模糊搜索工具，只读、不需要 `user_id`。`anime_name` 跨主表 `canonical_title` / `title_jp` / `title_zh` 模糊匹配；`anime_tag`（字符串数组）按来源记录表 `tags` 筛选，与名称为 AND 关系（空数组则仅按名称）；返回匹配番剧列表（含 `anime.id` UUID 与命中来源摘要）。
+- `recent_anime(user_id)`：最近动漫推荐工具，`user_id` 由调用方传入（字符串）。返回最近番剧的推荐列表（本期为占位，返回空字符串）。
 
 ## Prompt 契约
 
@@ -141,5 +141,5 @@ tests/
 - **Prompt 装饰器**：使用 `@mcp.prompt()` 装饰器定义提示模板
 - **Resource 装饰器**：使用 `@mcp.resource()` 装饰器暴露数据资源
 - **传输方式**：使用 Streamable HTTP，入口为 `mcp.run(transport="streamable-http")`
-- **鉴权**：streamable-http 连接通过 `Authorization: Bearer <JWT>` 鉴权并解析用户身份（`sub` → `user.id`），详见「架构要点 → 鉴权与用户解析」
+- **鉴权**：服务端不做鉴权；用户身份由调用方在调用工具时以 `user_id` 字符串参数传入，详见「架构要点 → 用户解析」
 - **调试**：使用 `pixi run inspect` 启动 MCP Inspector 进行交互式调试

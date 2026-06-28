@@ -8,7 +8,7 @@ version = "0.1.0"
 [tasks]
 serve = "python -m src"
 lint = "ruff check src/"
-inspect = "DANGEROUSLY_OMIT_AUTH=true npx @modelcontextprotocol/inspector"
+inspect = "npx @modelcontextprotocol/inspector"
 code = "code ."
 clean-db = "python -c \"import pathlib; pathlib.Path('watchthisanime.db').unlink(missing_ok=True)\""
 
@@ -20,4 +20,3 @@ sqlalchemy = ">=2.0"
 nodejs = "*"
 pytest = "*"
 ruff = "*"
-pyjwt = ">=2.13.0,<3"

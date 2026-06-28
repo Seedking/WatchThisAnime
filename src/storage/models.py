@@ -5,7 +5,7 @@
 
 - ``anime`` 主表使用 UUID 主键，UUID 由 GitHub 数据集同步时分配（``uuid4`` 作兜底默认）；
 - 三个来源记录表结构同构，各自表内 ``source_id`` 唯一，通过外键关联 ``anime.id``；
-- ``user.id = JWT sub``，由 JWT 解析自动 upsert；
+- ``user.id`` 为外部传入的字符串用户标识，首次访问时创建（见 ``services.user_service.ensure_user``）；
 - 两张交互表本期列结构一致，``tag_interactions`` 为占位，待后续按 CLAUDE.md
   （``tag`` + ``score`` + ``UNIQUE(user_id, tag)``）调整。
 """
@@ -143,15 +143,14 @@ class JikanRecord(Base):
 
 
 class User(Base):
-    """用户表：由 JWT 解析自动 upsert。
+    """用户表：``id`` 为外部传入的字符串用户标识，首次访问时创建。
 
-    ``id = JWT sub``（UUID），``username`` 取 claims 可读名，缺失回落 ``sub``。
+    用户管理由外部系统完成；服务端只在首次见到某 ``user_id`` 时插入一行，后续直接复用。
     """
 
     __tablename__ = "user"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
-    username: Mapped[str | None] = mapped_column(String, nullable=True)
+    id: Mapped[str] = mapped_column(String, primary_key=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=func.now(), onupdate=func.now()
@@ -165,7 +164,7 @@ class User(Base):
     )
 
     def __repr__(self) -> str:
-        return f"<User id={self.id} username={self.username!r}>"
+        return f"<User id={self.id!r}>"
 
 
 class AnimeInteraction(Base):
@@ -183,7 +182,7 @@ class AnimeInteraction(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("user.id"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("user.id"))
     anime_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("anime.id"))
     action: Mapped[str] = mapped_column(String(20))
     rating: Mapped[int | None] = mapped_column(nullable=True)
@@ -194,7 +193,7 @@ class AnimeInteraction(Base):
 
     def __repr__(self) -> str:
         return (
-            f"<AnimeInteraction user_id={self.user_id} anime_id={self.anime_id} "
+            f"<AnimeInteraction user_id={self.user_id!r} anime_id={self.anime_id} "
             f"action={self.action!r} rating={self.rating}>"
         )
 
@@ -214,7 +213,7 @@ class TagInteraction(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("user.id"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("user.id"))
     anime_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("anime.id"))
     action: Mapped[str] = mapped_column(String(20))
     rating: Mapped[int | None] = mapped_column(nullable=True)
@@ -225,6 +224,6 @@ class TagInteraction(Base):
 
     def __repr__(self) -> str:
         return (
-            f"<TagInteraction user_id={self.user_id} anime_id={self.anime_id} "
+            f"<TagInteraction user_id={self.user_id!r} anime_id={self.anime_id} "
             f"action={self.action!r} rating={self.rating}>"
         )
