@@ -10,10 +10,12 @@ pixi run lint       # ruff 代码检查（ruff check src/）
 pixi run sync       # 手动触发 GitHub 数据集同步（待添加到 pixi.toml）
 pixi run inspect    # MCP Inspector 调试（仅限本地开发使用）
 pixi run code       # 在 VSCode 中打开项目
-pixi run test       # 运行测试（pytest）
+pixi run pytest     # 运行测试（默认跳过 live 网络测试）
+RUN_LIVE=1 pixi run pytest  # 运行真实网络测试（详见「真实网络测试」）
 ```
 
 > **注意**：`pixi run inspect` 用于本地交互式调试，启动 MCP Inspector。
+> **注意**：`pixi.toml` 未定义 `test` 任务，测试统一用 `pixi run pytest` 运行。
 
 ## 当前项目结构
 
@@ -125,6 +127,30 @@ tests/
 - **错误处理**：使用自定义异常层次结构，不暴露原始 HTTP 错误给 MCP 客户端
 - **ruff 检查**：提交前运行 `pixi run lint`，确保无错误通过
 - **测试**：使用 pytest，测试文件放在 `tests/` 目录，与被测模块路径对应
+
+## 真实网络测试
+
+> **强制规则**：每次新增对外部 API 发起真实网络请求的代码——在 `sources/` 各 client 上**新增端点方法**、**新增请求路径**、或**改动请求参数 / 路径前缀**——必须同时新增一个真实网络（live）测试，并在本地实跑通过后，改动方可视为完成。仅通过 `MockTransport` mock 的网络代码视为**未验证**。
+
+- **为什么**：mock 测试只校验解析逻辑，无法发现真实环境才暴露的问题——路径前缀错误（典型教训：萌娘百科的 MediaWiki 脚本在根目录 `/rest.php`、`/index.php`，而非 `/w/`）、UA / 鉴权限制、字段缺失或形状变化等。这些只能靠真连发现。
+- **live 测试约定**：用环境变量守卫，默认跳过，不影响离线开发与常规 `pytest`：
+  ```python
+  import os
+  import pytest
+
+  _LIVE = os.environ.get("RUN_LIVE") == "1"
+
+  @pytest.mark.skipif(not _LIVE, reason="需真实网络；设置 RUN_LIVE=1 启用")
+  def test_get_page_live() -> None:
+      ...
+  ```
+- **命名与位置**：live 测试放在对应 client 的 `tests/test_sources/test_<client>_client.py`，与 mock 单测同文件；函数名以 `_live` 结尾（如 `test_get_page_live`），便于定向运行与排查。
+- **运行方式**：
+  - 先确认默认套件全绿（live 跳过）：`pixi run pytest`
+  - 再单独跑 live：`RUN_LIVE=1 pixi run pytest <测试文件>::<测试名>`
+  - PowerShell 下：`$env:RUN_LIVE=1; pixi run pytest <测试文件>::<测试名>`
+- **断言要点**：至少断言真实返回的关键标识字段（如 page id / source id）、按规则生成的稳定 URL（如萌娘百科的 `index.php?curid=`），确保**请求落点**与**响应解析**都正确。
+- **不要把 live 测试纳入默认运行**：live 测试默认 skip，CI / 离线环境不得依赖真连；常规 `pixi run pytest` 必须保持全绿（仅 live 被 skip）。
 
 ## 开发环境
 
