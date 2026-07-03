@@ -336,6 +336,27 @@ def test_search_anime_empty_data_and_pagination() -> None:
     asyncio.run(run())
 
 
+def test_get_anime_parses_detail_response() -> None:
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return httpx.Response(200, json={"data": _SAMPLE_SEARCH["data"][0]})
+
+    async def run() -> None:
+        client = JikanClient(transport=httpx.MockTransport(handler))
+        result = await client.get_anime(1)
+        await client.aclose()
+
+        assert captured["url"] == "https://api.jikan.moe/v4/anime/1"
+        assert result.data is not None
+        assert result.data.mal_id == 1
+        assert result.data.title == "Cowboy Bebop"
+        assert result.data.score == 8.75
+
+    asyncio.run(run())
+
+
 _LIVE = os.environ.get("RUN_LIVE") == "1"
 
 
@@ -356,5 +377,20 @@ def test_search_anime_live() -> None:
         assert anime.title == "Cowboy Bebop"
         assert anime.url == "https://myanimelist.net/anime/1/Cowboy_Bebop"
         assert result.pagination is not None
+
+    asyncio.run(run())
+
+
+@pytest.mark.skipif(not _LIVE, reason="需真实网络；设置 RUN_LIVE=1 启用")
+def test_get_anime_live() -> None:
+    """真实网络联调：按 MAL id 获取 Cowboy Bebop。"""
+
+    async def run() -> None:
+        async with JikanClient() as client:
+            result = await client.get_anime(1)
+
+        assert result.data is not None
+        assert result.data.mal_id == 1
+        assert result.data.title == "Cowboy Bebop"
 
     asyncio.run(run())

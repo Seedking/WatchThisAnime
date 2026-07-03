@@ -10,6 +10,7 @@ import os
 import httpx
 import pytest
 
+from scripts.analyze_moegirl_page import analyze_page_payload
 from src.sources.moegirl_client import MoegirlClient, MoegirlPage
 
 # 取自用户提供的 MediaWiki REST 搜索响应示例（单条 page），含 thumbnail 以便验证裁剪。
@@ -159,6 +160,7 @@ _SAMPLE_PAGE = {
         "title": "Creative Commons Attribution-Share Alike 3.0",
     },
     "html_url": "https://en.wikipedia.org/w/rest.php/v1/page/Earth/html",
+    "source": "{{动画信息|标题 = Earth|原名 = Earth}}\nEarth is a test page.\n[[Category:测试]]",
 }
 
 
@@ -185,6 +187,8 @@ def test_get_page_parses_response() -> None:
         assert page.title == "Earth"
         assert page.content_model == "wikitext"
         assert page.html_url == "https://en.wikipedia.org/w/rest.php/v1/page/Earth/html"
+        assert page.source is not None
+        assert "[[Category:测试]]" in page.source
 
         # latest 嵌套对象。
         assert page.latest is not None
@@ -220,6 +224,7 @@ def test_get_page_handles_none_fields() -> None:
         assert page.latest is None
         assert page.license is None
         assert page.html_url is None
+        assert page.source is None
         assert page.url == "https://zh.moegirl.org.cn/index.php?curid=649332"
 
     asyncio.run(run())
@@ -232,6 +237,16 @@ def test_page_url_builder() -> None:
         == "https://zh.moegirl.org.cn/index.php?curid=649332"
     )
     assert MoegirlClient.page_url(1) == "https://zh.moegirl.org.cn/index.php?curid=1"
+
+
+def test_analyze_page_payload_extracts_source_signals() -> None:
+    result = analyze_page_payload(_SAMPLE_PAGE)
+
+    assert result["has_source"] is True
+    assert result["has_stable_rating"] is False
+    assert result["categories"] == ["测试"]
+    assert "Earth" in result["aliases"]
+    assert result["summary_candidate"] == "Earth is a test page."
 
 
 _LIVE = os.environ.get("RUN_LIVE") == "1"

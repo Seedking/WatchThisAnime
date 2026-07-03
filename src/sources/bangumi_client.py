@@ -86,6 +86,16 @@ class BangumiSubject:
 
 
 @dataclass(frozen=True)
+class BangumiSearchResponse:
+    """Bangumi subject search response."""
+
+    data: list[BangumiSubject]
+    total: int | None
+    limit: int | None
+    offset: int | None
+
+
+@dataclass(frozen=True)
 class BangumiCalendarItem:
     """``/calendar`` 单条番剧条目（精简后）。
 
@@ -183,6 +193,34 @@ class BangumiClient(BaseAPIClient):
         """
         response = await self.get(f"/v0/subjects/{subject_id}")
         return self._parse_subject(response.json())
+
+    async def search_subjects(
+        self,
+        *,
+        keyword: str,
+        limit: int | None = None,
+        offset: int | None = None,
+        sort: str = "match",
+        type_filter: list[int] | None = None,
+    ) -> BangumiSearchResponse:
+        """Search anime subjects with ``POST /v0/search/subjects``."""
+        params: dict[str, str] = {}
+        if limit is not None:
+            params["limit"] = str(limit)
+        if offset is not None:
+            params["offset"] = str(offset)
+
+        payload: dict[str, object] = {
+            "keyword": keyword,
+            "sort": sort,
+            "filter": {"type": type_filter or [2]},
+        }
+        response = await self.post(
+            "/v0/search/subjects",
+            params=params or None,
+            json=payload,
+        )
+        return self._parse_search_response(response.json())
 
     @staticmethod
     def _parse_rating(raw: dict[str, object] | None) -> BangumiRating | None:
@@ -282,6 +320,17 @@ class BangumiClient(BaseAPIClient):
             collection=BangumiClient._parse_collection(raw.get("collection")),  # type: ignore[arg-type]
             tags=[BangumiClient._parse_tag(tag) for tag in tags_raw],
             meta_tags=[str(tag) for tag in meta_tags_raw if tag is not None],
+        )
+
+    @staticmethod
+    def _parse_search_response(raw: dict[str, object]) -> BangumiSearchResponse:
+        """Parse ``/v0/search/subjects`` response."""
+        data_raw: list[dict[str, object]] = raw.get("data") or []  # type: ignore[assignment]
+        return BangumiSearchResponse(
+            data=[BangumiClient._parse_subject(item) for item in data_raw],
+            total=_as_int(raw.get("total")),
+            limit=_as_int(raw.get("limit")),
+            offset=_as_int(raw.get("offset")),
         )
 
 

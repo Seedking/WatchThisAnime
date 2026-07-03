@@ -119,6 +119,7 @@ class BaseAPIClient(ABC):
         self,
         path: str,
         *,
+        params: dict[str, str] | None = None,
         json: Any | None = None,
         data: Any | None = None,
         headers: dict[str, str] | None = None,
@@ -139,7 +140,14 @@ class BaseAPIClient(ABC):
             APIClientConnectionError: 网络/连接故障。
             APIClientHTTPError: 非 2xx 响应。
         """
-        return await self._request("POST", path, json=json, data=data, headers=headers)
+        return await self._request(
+            "POST",
+            path,
+            params=params,
+            json=json,
+            data=data,
+            headers=headers,
+        )
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         """执行单次请求，含并发限流、重试与异常包装。

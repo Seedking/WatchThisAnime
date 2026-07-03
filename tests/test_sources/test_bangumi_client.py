@@ -319,6 +319,32 @@ def test_get_subject_handles_none_fields() -> None:
     asyncio.run(run())
 
 
+def test_search_subjects_posts_body_and_parses_response() -> None:
+    captured: dict[str, object] = {}
+    payload = {"data": [_SAMPLE_SUBJECT], "total": 1, "limit": 3, "offset": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["body"] = request.content.decode()
+        return httpx.Response(200, json=payload)
+
+    async def run() -> None:
+        client = BangumiClient(transport=httpx.MockTransport(handler))
+        result = await client.search_subjects(keyword="cowboy", limit=3, offset=0)
+        await client.aclose()
+
+        assert captured["url"] == "https://api.bgm.tv/v0/search/subjects?limit=3&offset=0"
+        assert '"keyword":"cowboy"' in captured["body"]
+        assert '"type":[2]' in captured["body"]
+        assert result.total == 1
+        assert result.limit == 3
+        assert result.offset == 0
+        assert result.data[0].id == 12
+        assert result.data[0].rank == 573
+
+    asyncio.run(run())
+
+
 def test_access_token_attaches_authorization_header() -> None:
     """传入 access_token 时，所有请求携带 ``Authorization: Bearer <token>`` 头。"""
     captured: dict[str, str] = {}
@@ -406,5 +432,23 @@ def test_get_subject_live() -> None:
         assert subject.name == "ちょびっツ"
         assert subject.name_cn == "人形电脑天使心"
         assert subject.date == "2002-04-02"
+
+    asyncio.run(run())
+
+
+@pytest.mark.skipif(not _LIVE, reason="需真实网络；设置 RUN_LIVE=1 启用")
+def test_search_subjects_live() -> None:
+    """真实网络联调：搜索 Cowboy Bebop 并校验稳定 subject id。"""
+
+    async def run() -> None:
+        async with BangumiClient() as client:
+            result = await client.search_subjects(
+                keyword="Cowboy Bebop",
+                limit=5,
+                offset=0,
+            )
+
+        assert result.data
+        assert any(subject.id == 253 for subject in result.data)
 
     asyncio.run(run())

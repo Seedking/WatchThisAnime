@@ -9,7 +9,10 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from src.mcp.tools.record_user_interaction import record_user_interaction
+from src.mcp.tools import search_anime as search_tool
+from src.mcp.tools.search_anime import search_anime
 from src.services import interaction_service, user_service
+from src.services.search_service import SearchError
 from src.storage.database import Base
 from src.storage.models import Anime, BangumiRecord, TagInteraction
 
@@ -101,3 +104,48 @@ def test_record_user_interaction_tool_returns_error_json(
 
     assert payload["ok"] is False
     assert payload["error"]["code"] == "invalid_anime_id"
+
+
+def test_search_anime_tool_returns_compact_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_search(anime_name: str, anime_tag: list[str] | None = None) -> dict:
+        assert anime_name == "Cowboy Bebop"
+        assert anime_tag == ["科幻"]
+        return {
+            "ok": True,
+            "query": {"anime_name": anime_name, "anime_tag": anime_tag},
+            "items": [
+                {
+                    "title": "星际牛仔",
+                    "tags": ["科幻"],
+                    "summary": "summary",
+                    "url": "https://bgm.tv/subject/253",
+                    "ratings": {
+                        "bangumi": 9.1,
+                        "jikan": 8.75,
+                        "moegirl": None,
+                    },
+                }
+            ],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(search_tool, "search_anime_service", fake_search)
+
+    payload = json.loads(search_anime("Cowboy Bebop", ["科幻"]))
+
+    assert payload["ok"] is True
+    item = payload["items"][0]
+    assert set(item) == {"title", "tags", "summary", "url", "ratings"}
+    assert item["ratings"]["moegirl"] is None
+
+
+def test_search_anime_tool_returns_error_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_search(anime_name: str, anime_tag: list[str] | None = None) -> dict:
+        raise SearchError("invalid_query", "anime_name 不能为空")
+
+    monkeypatch.setattr(search_tool, "search_anime_service", fake_search)
+
+    payload = json.loads(search_anime("", None))
+
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "invalid_query"

@@ -10,13 +10,13 @@
 """
 
 import uuid
-from datetime import date, datetime
+from datetime import datetime
 
 from sqlalchemy import (
     CheckConstraint,
-    Date,
     DateTime,
     ForeignKey,
+    Integer,
     String,
     UniqueConstraint,
     Uuid,
@@ -38,10 +38,6 @@ class Anime(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     canonical_title: Mapped[str | None] = mapped_column(String, nullable=True)
-    title_jp: Mapped[str | None] = mapped_column(String, nullable=True)
-    title_zh: Mapped[str | None] = mapped_column(String, nullable=True)
-    airing_date: Mapped[date | None] = mapped_column(Date, nullable=True)
-    season: Mapped[str | None] = mapped_column(String, nullable=True)
 
     bangumi_records: Mapped[list["BangumiRecord"]] = relationship(
         back_populates="anime", cascade="all, delete-orphan"
@@ -78,7 +74,14 @@ class BangumiRecord(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     source_id: Mapped[str] = mapped_column(String, unique=True)
     anime_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("anime.id"))
+    name: Mapped[str | None] = mapped_column(String, nullable=True)
+    name_cn: Mapped[str | None] = mapped_column(String, nullable=True)
+    summary: Mapped[str | None] = mapped_column(String, nullable=True)
+    air_date: Mapped[str | None] = mapped_column(String, nullable=True)
+    platform: Mapped[str | None] = mapped_column(String, nullable=True)
+    rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
     score: Mapped[float | None] = mapped_column(nullable=True)
+    total_episodes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tags: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     cover: Mapped[str | None] = mapped_column(String, nullable=True)
     url: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -101,6 +104,13 @@ class MoegirlRecord(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     source_id: Mapped[str] = mapped_column(String, unique=True)
     anime_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("anime.id"))
+    page_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    page_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+    summary: Mapped[str | None] = mapped_column(String, nullable=True)
+    latest_revision_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    latest_timestamp: Mapped[str | None] = mapped_column(String, nullable=True)
+    content_model: Mapped[str | None] = mapped_column(String, nullable=True)
     score: Mapped[float | None] = mapped_column(nullable=True)
     tags: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     cover: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -124,6 +134,16 @@ class JikanRecord(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     source_id: Mapped[str] = mapped_column(String, unique=True)
     anime_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("anime.id"))
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+    title_english: Mapped[str | None] = mapped_column(String, nullable=True)
+    title_japanese: Mapped[str | None] = mapped_column(String, nullable=True)
+    title_synonyms: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    synopsis: Mapped[str | None] = mapped_column(String, nullable=True)
+    year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    season: Mapped[str | None] = mapped_column(String, nullable=True)
+    media_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    episodes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
     score: Mapped[float | None] = mapped_column(nullable=True)
     tags: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     cover: Mapped[str | None] = mapped_column(String, nullable=True)

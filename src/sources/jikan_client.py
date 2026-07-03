@@ -186,6 +186,13 @@ class JikanSearchResponse:
     pagination: JikanPagination | None
 
 
+@dataclass(frozen=True)
+class JikanAnimeResponse:
+    """``GET /anime/{id}`` response."""
+
+    data: JikanAnime | None
+
+
 class JikanClient(BaseAPIClient):
     """Jikan HTTP client。"""
 
@@ -314,6 +321,11 @@ class JikanClient(BaseAPIClient):
 
         response = await self.get("/anime", params=params or None)
         return JikanClient._parse_search_response(response.json())
+
+    async def get_anime(self, anime_id: int) -> JikanAnimeResponse:
+        """Fetch one anime detail by MAL id with ``GET /anime/{id}``."""
+        response = await self.get(f"/anime/{anime_id}")
+        return JikanClient._parse_anime_response(response.json())
 
     @staticmethod
     def _parse_title(raw: dict[str, object]) -> JikanTitle:
@@ -469,6 +481,14 @@ class JikanClient(BaseAPIClient):
         return JikanSearchResponse(
             data=[JikanClient._parse_anime(item) for item in data_raw],
             pagination=JikanClient._parse_pagination(raw.get("pagination")),  # type: ignore[arg-type]
+        )
+
+    @staticmethod
+    def _parse_anime_response(raw: dict[str, object]) -> JikanAnimeResponse:
+        """Parse ``GET /anime/{id}`` response."""
+        data_raw = raw.get("data")
+        return JikanAnimeResponse(
+            data=JikanClient._parse_anime(data_raw) if isinstance(data_raw, dict) else None
         )
 
 

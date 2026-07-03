@@ -71,6 +71,7 @@ class MoegirlPage:
     latest: MoegirlPageLatest | None
     license: MoegirlPageLicense | None
     html_url: str | None
+    source: str | None
     url: str  # 按响应 page id 生成的稳定「打开页面」URL（index.php?curid=）
 
 
@@ -222,6 +223,7 @@ class MoegirlClient(BaseAPIClient):
                 else None
             ),
             html_url=_as_str(raw.get("html_url")),
+            source=_as_str(raw.get("source")),
             url=MoegirlClient.page_url(page_id) if page_id else "",
         )
 
