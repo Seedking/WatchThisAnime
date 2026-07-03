@@ -4,9 +4,14 @@
 装饰器完成注册，随后运行服务器。
 """
 
-from src.mcp import prompts, tools  # noqa: F401  注册工具与提示
-from src.mcp.server import mcp
-from src.storage.database import init_db
+from dotenv import load_dotenv
+
+# 先加载 .env（如 BANGUMI_ACCESS_TOKEN），再导入 src 各模块，确保 client 构造时环境变量已就绪。
+load_dotenv()
+
+from src.mcp import prompts, tools  # noqa: E402,F401  注册工具与提示
+from src.mcp.server import mcp  # noqa: E402
+from src.storage.database import init_db  # noqa: E402
 
 
 def main() -> None:

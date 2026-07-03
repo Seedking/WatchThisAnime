@@ -5,6 +5,7 @@
 精简数据结构（``@dataclass(frozen=True)``），业务编排留给 ``services/`` 层。
 """
 
+import os
 from dataclasses import dataclass
 
 import httpx
@@ -130,20 +131,30 @@ class BangumiClient(BaseAPIClient):
         self,
         config: ClientConfig | None = None,
         *,
+        access_token: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         """初始化 Bangumi client。
 
         Args:
             config: 公共配置，缺省时使用 ``ClientConfig()`` 默认值。
+            access_token: Bangumi 个人访问令牌；缺省时从环境变量
+                ``BANGUMI_ACCESS_TOKEN`` 读取。非空时以 ``Authorization: Bearer``
+                头携带，用于访问需授权接口并提高速率限制。
             transport: 可选的自定义异步传输层，供测试注入 ``httpx.MockTransport``。
         """
+        self._access_token: str | None = (
+            access_token if access_token is not None else os.getenv("BANGUMI_ACCESS_TOKEN")
+        )
         super().__init__(base_url=self._BASE_URL, config=config, transport=transport)
 
     @property
     def default_headers(self) -> dict[str, str]:
-        """Bangumi 默认请求头：满足其 ``User-Agent`` 要求。"""
-        return {"User-Agent": self._USER_AGENT}
+        """Bangumi 默认请求头：满足其 ``User-Agent`` 要求，并在有 token 时附带鉴权头。"""
+        headers: dict[str, str] = {"User-Agent": self._USER_AGENT}
+        if self._access_token:
+            headers["Authorization"] = f"Bearer {self._access_token}"
+        return headers
 
     async def get_calendar(self) -> list[BangumiCalendarDay]:
         """获取每日放送表（``GET /calendar``）。

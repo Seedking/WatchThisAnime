@@ -5,10 +5,14 @@
 """
 
 import asyncio
+import os
+import time
 
 import httpx
+import pytest
 
 from src.sources.bangumi_client import BangumiClient
+from src.utils.base_api_client import APIClientError
 
 # 取自用户提供的 /calendar 示例（一个 weekday、一个 item）。
 _SAMPLE_CALENDAR = [
@@ -311,5 +315,96 @@ def test_get_subject_handles_none_fields() -> None:
         assert subject.date is None
         assert subject.eps is None
         assert subject.type is None
+
+    asyncio.run(run())
+
+
+def test_access_token_attaches_authorization_header() -> None:
+    """传入 access_token 时，所有请求携带 ``Authorization: Bearer <token>`` 头。"""
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["auth"] = request.headers.get("authorization", "")
+        return httpx.Response(200, json=_SAMPLE_SUBJECT)
+
+    async def run() -> None:
+        client = BangumiClient(
+            access_token="test-token", transport=httpx.MockTransport(handler)
+        )
+        await client.get_subject(12)
+        await client.aclose()
+
+    asyncio.run(run())
+    assert captured["auth"] == "Bearer test-token"
+
+
+def test_no_access_token_omits_authorization_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    """未提供 token（且环境变量未设）时，请求不带 ``Authorization`` 头。"""
+    monkeypatch.delenv("BANGUMI_ACCESS_TOKEN", raising=False)
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["auth"] = request.headers.get("authorization", "")
+        return httpx.Response(200, json=_SAMPLE_SUBJECT)
+
+    async def run() -> None:
+        client = BangumiClient(transport=httpx.MockTransport(handler))
+        await client.get_subject(12)
+        await client.aclose()
+
+    asyncio.run(run())
+    assert captured["auth"] == ""
+
+
+_LIVE = os.environ.get("RUN_LIVE") == "1"
+_WEEKDAYS = {"星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"}
+
+
+@pytest.mark.skipif(not _LIVE, reason="需真实网络；设置 RUN_LIVE=1 启用")
+def test_get_calendar_live() -> None:
+    """真实网络联调：拉取每日放送表，校验 weekday 中文与条目结构。
+
+    ``bgm.tv`` 的 ``/calendar`` 端点较重，上游网关间歇性返回 502（实测同 UA 同库
+    连续三次返回 200 / 502 / 200）。client 自带的 5xx 重试不足以覆盖其抖动窗口，
+    故在测试层再重试若干次穿过瞬时 502；这不是掩盖 client 缺陷——端点正常时路径、
+    UA、解析均正确（200 响应体约 73KB）。
+    """
+    async def run() -> None:
+        days = None
+        last_exc: Exception | None = None
+        for _ in range(6):
+            try:
+                async with BangumiClient() as client:
+                    days = await client.get_calendar()
+                break
+            except APIClientError as exc:
+                last_exc = exc
+                time.sleep(1.0)
+        if days is None:
+            raise AssertionError(f"/calendar 多次重试仍失败：{last_exc}")
+
+        assert len(days) >= 1
+        assert all(d.weekday in _WEEKDAYS for d in days)
+        # 放送表应至少有一部番剧条目；抽样校验关键字段。
+        total = sum(len(d.items) for d in days)
+        assert total >= 1
+        sample = next(d.items[0] for d in days if d.items)
+        assert sample.id > 0
+        assert sample.name  # 非空
+
+    asyncio.run(run())
+
+
+@pytest.mark.skipif(not _LIVE, reason="需真实网络；设置 RUN_LIVE=1 启用")
+def test_get_subject_live() -> None:
+    """真实网络联调：拉取 subject 12（「人形电脑天使心」），校验请求落点与字段解析。"""
+    async def run() -> None:
+        async with BangumiClient() as client:
+            subject = await client.get_subject(12)
+
+        assert subject.id == 12
+        assert subject.name == "ちょびっツ"
+        assert subject.name_cn == "人形电脑天使心"
+        assert subject.date == "2002-04-02"
 
     asyncio.run(run())
