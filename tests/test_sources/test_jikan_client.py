@@ -5,8 +5,10 @@
 """
 
 import asyncio
+import os
 
 import httpx
+import pytest
 
 from src.sources.jikan_client import JikanClient
 
@@ -330,5 +332,29 @@ def test_search_anime_empty_data_and_pagination() -> None:
         assert result.pagination.items is not None
         assert result.pagination.items.total == 100
         assert result.pagination.items.count == 0
+
+    asyncio.run(run())
+
+
+_LIVE = os.environ.get("RUN_LIVE") == "1"
+
+
+@pytest.mark.skipif(not _LIVE, reason="需真实网络；设置 RUN_LIVE=1 启用")
+def test_search_anime_live() -> None:
+    """真实网络联调：搜索 Cowboy Bebop，校验 mal_id / title / url / pagination。
+
+    搜索结果排序不保证，故按 ``mal_id`` 定位稳定条目（Cowboy Bebop = 1），而非断言首条。
+    """
+    async def run() -> None:
+        async with JikanClient() as client:
+            result = await client.search_anime(q="Cowboy Bebop", limit=5)
+
+        assert len(result.data) >= 1
+        matches = [a for a in result.data if a.mal_id == 1]
+        assert matches, "Cowboy Bebop (mal_id=1) 应在搜索结果中"
+        anime = matches[0]
+        assert anime.title == "Cowboy Bebop"
+        assert anime.url == "https://myanimelist.net/anime/1/Cowboy_Bebop"
+        assert result.pagination is not None
 
     asyncio.run(run())
