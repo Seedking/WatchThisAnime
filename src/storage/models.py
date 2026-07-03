@@ -6,8 +6,7 @@
 - ``anime`` 主表使用 UUID 主键，UUID 由 GitHub 数据集同步时分配（``uuid4`` 作兜底默认）；
 - 三个来源记录表结构同构，各自表内 ``source_id`` 唯一，通过外键关联 ``anime.id``；
 - ``user.id`` 为外部传入的字符串用户标识，首次访问时创建（见 ``services.user_service.ensure_user``）；
-- 两张交互表本期列结构一致，``tag_interactions`` 为占位，待后续按 CLAUDE.md
-  （``tag`` + ``score`` + ``UNIQUE(user_id, tag)``）调整。
+- ``anime_interactions`` 记录番剧行为历史，``tag_interactions`` 记录标签偏好分。
 """
 
 import uuid
@@ -19,6 +18,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     String,
+    UniqueConstraint,
     Uuid,
     func,
 )
@@ -53,9 +53,6 @@ class Anime(Base):
         back_populates="anime", cascade="all, delete-orphan"
     )
     anime_interactions: Mapped[list["AnimeInteraction"]] = relationship(
-        back_populates="anime", cascade="all, delete-orphan"
-    )
-    tag_interactions: Mapped[list["TagInteraction"]] = relationship(
         back_populates="anime", cascade="all, delete-orphan"
     )
 
@@ -199,31 +196,23 @@ class AnimeInteraction(Base):
 
 
 class TagInteraction(Base):
-    """用户对标签/题材的打分记录（占位）。
-
-    本期列结构暂同 ``AnimeInteraction``，待后续按 CLAUDE.md 调整为
-    ``tag`` + ``score`` + ``UNIQUE(user_id, tag)``。
-    """
+    """用户对标签/题材的当前偏好分。"""
 
     __tablename__ = "tag_interactions"
     __table_args__ = (
-        CheckConstraint(
-            "rating BETWEEN 1 AND 10", name="ck_tag_interactions_rating"
-        ),
+        UniqueConstraint("user_id", "tag", name="uq_tag_interactions_user_tag"),
+        CheckConstraint("score BETWEEN 1 AND 10", name="ck_tag_interactions_score"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("user.id"))
-    anime_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("anime.id"))
-    action: Mapped[str] = mapped_column(String(20))
-    rating: Mapped[int | None] = mapped_column(nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    tag: Mapped[str] = mapped_column(String)
+    score: Mapped[int] = mapped_column()
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=func.now(), onupdate=func.now()
+    )
 
     user: Mapped["User"] = relationship(back_populates="tag_interactions")
-    anime: Mapped["Anime"] = relationship(back_populates="tag_interactions")
 
     def __repr__(self) -> str:
-        return (
-            f"<TagInteraction user_id={self.user_id!r} anime_id={self.anime_id} "
-            f"action={self.action!r} rating={self.rating}>"
-        )
+        return f"<TagInteraction user_id={self.user_id!r} tag={self.tag!r} score={self.score}>"
