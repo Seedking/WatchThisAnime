@@ -4,6 +4,7 @@ import uuid
 
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -89,12 +90,25 @@ def test_record_anime_interaction_keeps_history(
 @pytest.mark.parametrize(
     ("kwargs", "code"),
     [
+        ({"target_type": "anime", "target_id": "", "action": "viewed"}, "invalid_anime_id"),
+        ({"target_type": "anime", "target_id": "   ", "action": "viewed"}, "invalid_anime_id"),
+        ({"target_type": "anime", "target_id": 123, "action": "viewed"}, "invalid_anime_id"),
         ({"target_type": "anime", "target_id": "not-uuid", "action": "viewed"}, "invalid_anime_id"),
         (
             {"target_type": "anime", "target_id": str(uuid.uuid4()), "action": "viewed"},
             "anime_not_found",
         ),
+        ({"target_type": "anime", "target_id": str(uuid.uuid4()), "action": None}, "invalid_action"),
         ({"target_type": "anime", "target_id": str(uuid.uuid4()), "action": "dropped"}, "invalid_action"),
+        (
+            {
+                "target_type": "anime",
+                "target_id": str(uuid.uuid4()),
+                "action": "viewed",
+                "rating": True,
+            },
+            "invalid_rating",
+        ),
         (
             {"target_type": "anime", "target_id": str(uuid.uuid4()), "action": "viewed", "rating": 0},
             "invalid_rating",
@@ -115,6 +129,31 @@ def test_record_anime_interaction_rejects_invalid_input(
         record_interaction(user_id="alice", **kwargs)
 
     assert exc_info.value.code == code
+
+
+@pytest.mark.parametrize(
+    ("action", "rating"),
+    [
+        ("viewed", None),
+        ("wishlisted", 6),
+    ],
+)
+def test_record_anime_interaction_allows_optional_rating_for_valid_action(
+    memory_db: sessionmaker,
+    anime_id: uuid.UUID,
+    action: str,
+    rating: int | None,
+) -> None:
+    item = record_interaction(
+        "alice",
+        "anime",
+        str(anime_id),
+        rating=rating,
+        action=action,
+    )
+
+    assert item["action"] == action
+    assert item["rating"] == rating
 
 
 def test_record_tag_interaction_creates_score(
@@ -149,12 +188,30 @@ def test_record_tag_interaction_updates_existing_score(
         assert rows[0].score == 10
 
 
+def test_record_tag_interaction_ignores_action(
+    memory_db: sessionmaker, anime_id: uuid.UUID
+) -> None:
+    item = record_interaction(
+        "alice",
+        "tag",
+        "奇幻",
+        rating=8,
+        action="not-an-anime-action",
+    )
+
+    assert item["type"] == "tag"
+    assert item["tag"] == "奇幻"
+    assert item["score"] == 8
+
+
 @pytest.mark.parametrize(
     ("target_id", "rating", "code"),
     [
         ("", 8, "invalid_tag"),
+        ("   ", 8, "invalid_tag"),
         ("不存在", 8, "tag_not_found"),
         ("奇幻", None, "invalid_score"),
+        ("奇幻", True, "invalid_score"),
         ("奇幻", 0, "invalid_score"),
         ("奇幻", 11, "invalid_score"),
     ],
@@ -172,10 +229,74 @@ def test_record_tag_interaction_rejects_invalid_input(
     assert exc_info.value.code == code
 
 
-def test_record_interaction_rejects_empty_user(
-    memory_db: sessionmaker, anime_id: uuid.UUID
+@pytest.mark.parametrize("user_id", ["", "   ", "\t\n"])
+def test_record_interaction_rejects_blank_user(
+    memory_db: sessionmaker,
+    anime_id: uuid.UUID,
+    user_id: str,
 ) -> None:
     with pytest.raises(InteractionError) as exc_info:
-        record_interaction("", "anime", str(anime_id), action="viewed")
+        record_interaction(user_id, "anime", str(anime_id), action="viewed")
 
     assert exc_info.value.code == "invalid_user"
+
+
+def test_record_anime_interaction_rolls_back_database_failure(
+    memory_db: sessionmaker,
+    anime_id: uuid.UUID,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = memory_db()
+    rollback_called = False
+    real_rollback = session.rollback
+
+    def fail_commit() -> None:
+        raise SQLAlchemyError("simulated database failure")
+
+    def track_rollback() -> None:
+        nonlocal rollback_called
+        rollback_called = True
+        real_rollback()
+
+    monkeypatch.setattr(session, "commit", fail_commit)
+    monkeypatch.setattr(session, "rollback", track_rollback)
+    monkeypatch.setattr(interaction_service, "SessionLocal", lambda: session)
+
+    with pytest.raises(InteractionError) as exc_info:
+        record_interaction("alice", "anime", str(anime_id), action="viewed")
+
+    assert exc_info.value.code == "database_error"
+    assert rollback_called is True
+    with memory_db() as verification_session:
+        assert verification_session.query(AnimeInteraction).count() == 0
+
+
+def test_record_tag_interaction_rolls_back_database_failure(
+    memory_db: sessionmaker,
+    anime_id: uuid.UUID,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record_interaction("alice", "tag", "奇幻", rating=5, action=None)
+    session = memory_db()
+    rollback_called = False
+    real_rollback = session.rollback
+
+    def fail_commit() -> None:
+        raise SQLAlchemyError("simulated database failure")
+
+    def track_rollback() -> None:
+        nonlocal rollback_called
+        rollback_called = True
+        real_rollback()
+
+    monkeypatch.setattr(session, "commit", fail_commit)
+    monkeypatch.setattr(session, "rollback", track_rollback)
+    monkeypatch.setattr(interaction_service, "SessionLocal", lambda: session)
+
+    with pytest.raises(InteractionError) as exc_info:
+        record_interaction("alice", "tag", "奇幻", rating=10, action="viewed")
+
+    assert exc_info.value.code == "database_error"
+    assert rollback_called is True
+    with memory_db() as verification_session:
+        assert verification_session.query(TagInteraction).one().score == 5

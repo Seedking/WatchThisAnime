@@ -1,7 +1,12 @@
 """recent_anime 工具：最近动漫推荐。"""
 
+import json
+
 from src.mcp.server import mcp
-from src.services.user_service import UserError, ensure_user
+from src.services.recommend_service import (
+    RecommendationError,
+    recent_anime as recent_anime_service,
+)
 
 
 @mcp.tool()
@@ -12,7 +17,10 @@ def recent_anime(user_id: str) -> str:
     首次访问时创建用户记录。
     """
     try:
-        ensure_user(user_id)
-    except UserError as exc:
-        return f"错误：{exc}"
-    return ""
+        payload = recent_anime_service(user_id)
+    except RecommendationError as exc:
+        return json.dumps(
+            {"ok": False, "error": {"code": exc.code, "message": exc.message}},
+            ensure_ascii=False,
+        )
+    return json.dumps({"ok": True, **payload}, ensure_ascii=False)

@@ -4,6 +4,7 @@ import uuid
 from typing import Any, Literal
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
 from src.services.user_service import UserError, ensure_user
 from src.storage.database import SessionLocal
@@ -20,6 +21,7 @@ TargetType = Literal["anime", "tag"]
 AnimeAction = Literal["viewed", "wishlisted"]
 
 _ANIME_ACTIONS: set[str] = {"viewed", "wishlisted"}
+_DATABASE_ERROR_MESSAGE = "数据库操作失败，请稍后重试"
 
 
 class InteractionError(ValueError):
@@ -39,10 +41,13 @@ def record_interaction(
     action: AnimeAction | str | None = None,
 ) -> dict[str, Any]:
     """校验并记录一次 anime 或 tag 交互。"""
+    _validate_user_id(user_id)
     try:
         ensure_user(user_id)
     except UserError as exc:
         raise InteractionError("invalid_user", str(exc)) from exc
+    except SQLAlchemyError as exc:
+        raise InteractionError("database_error", _DATABASE_ERROR_MESSAGE) from exc
 
     if target_type == "anime":
         return _record_anime_interaction(user_id, target_id, action, rating)
@@ -57,38 +62,44 @@ def _record_anime_interaction(
     action: str | None,
     rating: int | None,
 ) -> dict[str, Any]:
-    if action not in _ANIME_ACTIONS:
+    if not isinstance(action, str) or action not in _ANIME_ACTIONS:
         raise InteractionError("invalid_action", "anime action 必须是 viewed 或 wishlisted")
     _validate_optional_rating(rating)
 
+    if not isinstance(target_id, str) or not target_id.strip():
+        raise InteractionError("invalid_anime_id", "target_id 必须是 Anime UUID")
     try:
         anime_id = uuid.UUID(target_id)
     except (TypeError, ValueError) as exc:
         raise InteractionError("invalid_anime_id", "target_id 必须是 Anime UUID") from exc
 
     with SessionLocal() as session:
-        anime = session.get(Anime, anime_id)
-        if anime is None:
-            raise InteractionError("anime_not_found", "Anime 不存在，无法记录交互")
+        try:
+            anime = session.get(Anime, anime_id)
+            if anime is None:
+                raise InteractionError("anime_not_found", "Anime 不存在，无法记录交互")
 
-        interaction = AnimeInteraction(
-            user_id=user_id,
-            anime_id=anime_id,
-            action=action,
-            rating=rating,
-        )
-        session.add(interaction)
-        session.commit()
-        session.refresh(interaction)
+            interaction = AnimeInteraction(
+                user_id=user_id,
+                anime_id=anime_id,
+                action=action,
+                rating=rating,
+            )
+            session.add(interaction)
+            session.commit()
+            session.refresh(interaction)
 
-        return {
-            "type": "anime",
-            "id": interaction.id,
-            "user_id": interaction.user_id,
-            "anime_id": str(interaction.anime_id),
-            "action": interaction.action,
-            "rating": interaction.rating,
-        }
+            return {
+                "type": "anime",
+                "id": interaction.id,
+                "user_id": interaction.user_id,
+                "anime_id": str(interaction.anime_id),
+                "action": interaction.action,
+                "rating": interaction.rating,
+            }
+        except SQLAlchemyError as exc:
+            session.rollback()
+            raise InteractionError("database_error", _DATABASE_ERROR_MESSAGE) from exc
 
 
 def _record_tag_interaction(
@@ -102,31 +113,40 @@ def _record_tag_interaction(
     _validate_required_score(rating)
 
     with SessionLocal() as session:
-        if not _tag_exists(session, tag):
-            raise InteractionError("tag_not_found", "tag 不存在，无法记录偏好分")
+        try:
+            if not _tag_exists(session, tag):
+                raise InteractionError("tag_not_found", "tag 不存在，无法记录偏好分")
 
-        interaction = session.scalar(
-            select(TagInteraction).where(
-                TagInteraction.user_id == user_id,
-                TagInteraction.tag == tag,
+            interaction = session.scalar(
+                select(TagInteraction).where(
+                    TagInteraction.user_id == user_id,
+                    TagInteraction.tag == tag,
+                )
             )
-        )
-        if interaction is None:
-            interaction = TagInteraction(user_id=user_id, tag=tag, score=rating)
-            session.add(interaction)
-        else:
-            interaction.score = rating
+            if interaction is None:
+                interaction = TagInteraction(user_id=user_id, tag=tag, score=rating)
+                session.add(interaction)
+            else:
+                interaction.score = rating
 
-        session.commit()
-        session.refresh(interaction)
+            session.commit()
+            session.refresh(interaction)
 
-        return {
-            "type": "tag",
-            "id": interaction.id,
-            "user_id": interaction.user_id,
-            "tag": interaction.tag,
-            "score": interaction.score,
-        }
+            return {
+                "type": "tag",
+                "id": interaction.id,
+                "user_id": interaction.user_id,
+                "tag": interaction.tag,
+                "score": interaction.score,
+            }
+        except SQLAlchemyError as exc:
+            session.rollback()
+            raise InteractionError("database_error", _DATABASE_ERROR_MESSAGE) from exc
+
+
+def _validate_user_id(user_id: str) -> None:
+    if not isinstance(user_id, str) or not user_id.strip():
+        raise InteractionError("invalid_user", "user_id 不能为空")
 
 
 def _validate_optional_rating(rating: int | None) -> None:

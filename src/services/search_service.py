@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from src.sources.bangumi_client import BangumiClient, BangumiSubject
 from src.sources.jikan_client import JikanAnime, JikanClient
@@ -56,6 +56,7 @@ class SourceAnime:
 class AnimeGroup:
     items: list[SourceAnime]
     anime_id: uuid.UUID | None = None
+    local_title: str | None = None
 
 
 def search_anime(
@@ -83,6 +84,10 @@ async def search_anime_async(
         raise SearchError("invalid_query", "anime_name 不能为空")
 
     requested_tags = _normalize_requested_tags(anime_tag)
+    local_groups = _search_local(query, requested_tags, limit)
+    if local_groups:
+        return _build_response(query, requested_tags, local_groups, [])
+
     own_clients: list[Any] = []
     if bangumi_client is None:
         bangumi_client = BangumiClient()
@@ -113,7 +118,7 @@ async def search_anime_async(
         strict=True,
     ):
         if isinstance(result, Exception):
-            warnings.append(f"{source_name} 搜索失败: {result}")
+            warnings.append(f"{source_name} 搜索失败")
         else:
             source_items.extend(result)
 
@@ -132,6 +137,118 @@ async def search_anime_async(
         group for group in groups if _matches_tags(group, requested_tags)
     ]
     return _build_response(query, requested_tags, visible_groups, warnings)
+
+
+def _search_local(
+    query: str,
+    requested_tags: list[str],
+    limit: int,
+) -> list[AnimeGroup]:
+    """Return matching local groups without contacting external sources."""
+    if limit <= 0:
+        return []
+    with SessionLocal() as session:
+        animes = session.scalars(
+            select(Anime).options(
+                selectinload(Anime.bangumi_records),
+                selectinload(Anime.jikan_records),
+                selectinload(Anime.moegirl_records),
+            )
+        ).all()
+        groups: list[AnimeGroup] = []
+        for anime in animes:
+            group = _local_group(anime)
+            if not _matches_local_name(group, query):
+                continue
+            if not _matches_tags(group, requested_tags):
+                continue
+            groups.append(group)
+            if len(groups) >= limit:
+                break
+        return groups
+
+
+def _local_group(anime: Anime) -> AnimeGroup:
+    group = AnimeGroup(
+        items=[],
+        anime_id=anime.id,
+        local_title=anime.canonical_title,
+    )
+    for record in anime.bangumi_records:
+        group.items.append(_source_from_local_bangumi(record, anime))
+    for record in anime.jikan_records:
+        group.items.append(_source_from_local_jikan(record, anime))
+    for record in anime.moegirl_records:
+        group.items.append(_source_from_local_moegirl(record, anime))
+    return group
+
+
+def _source_from_local_bangumi(
+    record: BangumiRecord,
+    anime: Anime,
+) -> SourceAnime:
+    return SourceAnime(
+        source="bangumi",
+        source_id=record.source_id,
+        title=record.name_cn or record.name or anime.canonical_title or "",
+        titles=_dedupe([record.name, record.name_cn, anime.canonical_title]),
+        year=_year_from_text(record.air_date),
+        summary=record.summary or "",
+        score=record.score,
+        tags=_dedupe(record.tags or []),
+        url=record.url or "",
+        cover=record.cover,
+        raw=record.raw or {},
+        existing_anime_id=anime.id,
+    )
+
+
+def _source_from_local_jikan(
+    record: JikanRecord,
+    anime: Anime,
+) -> SourceAnime:
+    return SourceAnime(
+        source="jikan",
+        source_id=record.source_id,
+        title=record.title or anime.canonical_title or "",
+        titles=_dedupe(
+            [
+                record.title,
+                record.title_english,
+                record.title_japanese,
+                anime.canonical_title,
+            ]
+            + (record.title_synonyms or [])
+        ),
+        year=record.year,
+        summary=record.synopsis or "",
+        score=record.score,
+        tags=_dedupe(record.tags or []),
+        url=record.url or "",
+        cover=record.cover,
+        raw=record.raw or {},
+        existing_anime_id=anime.id,
+    )
+
+
+def _source_from_local_moegirl(
+    record: MoegirlRecord,
+    anime: Anime,
+) -> SourceAnime:
+    return SourceAnime(
+        source="moegirl",
+        source_id=record.source_id,
+        title=record.title or record.page_key or anime.canonical_title or "",
+        titles=_dedupe([record.title, record.page_key, anime.canonical_title]),
+        year=_year_from_text(record.latest_timestamp),
+        summary=record.summary or "",
+        score=record.score,
+        tags=_dedupe(record.tags or []),
+        url=record.url or "",
+        cover=record.cover,
+        raw=record.raw or {},
+        existing_anime_id=anime.id,
+    )
 
 
 async def _search_bangumi(
@@ -457,7 +574,12 @@ def _canonical_title(group: AnimeGroup) -> str:
         for item in group.items:
             if item.source == source and item.title:
                 return item.title
-    return group.items[0].title
+    if group.local_title:
+        return group.local_title
+    for item in group.items:
+        if item.title:
+            return item.title
+    return ""
 
 
 def _merged_tags(group: AnimeGroup) -> list[str]:
@@ -469,6 +591,23 @@ def _matches_tags(group: AnimeGroup, requested_tags: list[str]) -> bool:
         return True
     tag_set = {_normalize_tag(tag) for tag in _merged_tags(group)}
     return all(_normalize_tag(tag) in tag_set for tag in requested_tags)
+
+
+def _matches_local_name(group: AnimeGroup, query: str) -> bool:
+    normalized_query = _normalize_title(query)
+    folded_query = query.casefold()
+    titles = _dedupe(
+        [group.local_title]
+        + [item.title for item in group.items]
+        + [title for item in group.items for title in item.titles]
+    )
+    for title in titles:
+        if normalized_query:
+            if normalized_query in _normalize_title(title):
+                return True
+        elif folded_query in title.casefold():
+            return True
+    return False
 
 
 def _is_same_anime(left: SourceAnime, right: SourceAnime) -> bool:

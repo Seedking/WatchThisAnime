@@ -87,6 +87,33 @@ class FakeMoegirlClient:
         return self.pages[0]
 
 
+class FailingBangumiClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def search_subjects(self, **kwargs: object) -> object:
+        self.calls += 1
+        raise RuntimeError("bangumi offline")
+
+
+class FailingJikanClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def search_anime(self, **kwargs: object) -> object:
+        self.calls += 1
+        raise RuntimeError("jikan offline")
+
+
+class FailingMoegirlClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def search(self, **kwargs: object) -> object:
+        self.calls += 1
+        raise RuntimeError("moegirl offline")
+
+
 def test_search_merges_sources_upserts_and_returns_compact_item(
     memory_db: sessionmaker,
 ) -> None:
@@ -178,6 +205,131 @@ def test_jikan_only_result_keeps_empty_summary_and_url(
     assert item["ratings"] == {"bangumi": None, "jikan": 8.75, "moegirl": None}
 
 
+def test_search_uses_local_records_before_external_sources(
+    memory_db: sessionmaker,
+) -> None:
+    _seed_local_anime(memory_db)
+    bangumi = FailingBangumiClient()
+    jikan = FailingJikanClient()
+    moegirl = FailingMoegirlClient()
+
+    payload = asyncio.run(
+        search_service.search_anime_async(
+            "cowboy",
+            bangumi_client=bangumi,
+            jikan_client=jikan,
+            moegirl_client=moegirl,
+        )
+    )
+
+    assert bangumi.calls == 0
+    assert jikan.calls == 0
+    assert moegirl.calls == 0
+    assert payload["warnings"] == []
+    assert payload["items"] == [
+        {
+            "title": "星际牛仔",
+            "tags": ["Action", "科幻", "Drama", "测试分类"],
+            "summary": "Local Bangumi summary",
+            "url": "https://bgm.example/253",
+            "ratings": {"bangumi": 8.6, "jikan": 8.4, "moegirl": None},
+        }
+    ]
+
+
+def test_search_local_main_table_only_uses_name_fallback(
+    memory_db: sessionmaker,
+) -> None:
+    anime_id = uuid.uuid4()
+    with memory_db() as session:
+        session.add(Anime(id=anime_id, canonical_title="Local Only Anime"))
+        session.commit()
+
+    payload = asyncio.run(
+        search_service.search_anime_async(
+            "local only",
+            bangumi_client=FailingBangumiClient(),
+            jikan_client=FailingJikanClient(),
+            moegirl_client=FailingMoegirlClient(),
+        )
+    )
+
+    assert payload["items"] == [
+        {
+            "title": "Local Only Anime",
+            "tags": [],
+            "summary": "",
+            "url": "",
+            "ratings": {"bangumi": None, "jikan": None, "moegirl": None},
+        }
+    ]
+
+
+def test_search_local_tags_require_all_tags(memory_db: sessionmaker) -> None:
+    _seed_local_anime(memory_db)
+
+    payload = asyncio.run(
+        search_service.search_anime_async(
+            "Cowboy",
+            anime_tag=["action", "科幻"],
+            bangumi_client=FailingBangumiClient(),
+            jikan_client=FailingJikanClient(),
+            moegirl_client=FailingMoegirlClient(),
+        )
+    )
+    missing = asyncio.run(
+        search_service.search_anime_async(
+            "Cowboy",
+            anime_tag=["action", "不存在"],
+            bangumi_client=FailingBangumiClient(),
+            jikan_client=FailingJikanClient(),
+            moegirl_client=FailingMoegirlClient(),
+        )
+    )
+
+    assert len(payload["items"]) == 1
+    assert missing["items"] == []
+    assert missing["warnings"] == [
+        "bangumi 搜索失败",
+        "jikan 搜索失败",
+        "moegirl 搜索失败",
+    ]
+
+
+def test_search_no_match_returns_empty_items_and_stable_warnings(
+    memory_db: sessionmaker,
+) -> None:
+    payload = asyncio.run(
+        search_service.search_anime_async(
+            "Definitely Missing",
+            bangumi_client=FailingBangumiClient(),
+            jikan_client=FailingJikanClient(),
+            moegirl_client=FailingMoegirlClient(),
+        )
+    )
+
+    assert payload["items"] == []
+    assert payload["warnings"] == [
+        "bangumi 搜索失败",
+        "jikan 搜索失败",
+        "moegirl 搜索失败",
+    ]
+
+
+def test_search_rejects_empty_name(memory_db: sessionmaker) -> None:
+    with pytest.raises(search_service.SearchError) as exc_info:
+        asyncio.run(
+            search_service.search_anime_async(
+                "   ",
+                bangumi_client=FailingBangumiClient(),
+                jikan_client=FailingJikanClient(),
+                moegirl_client=FailingMoegirlClient(),
+            )
+        )
+
+    assert exc_info.value.code == "invalid_query"
+
+
 def test_existing_source_id_reuses_anime(memory_db: sessionmaker) -> None:
     existing_id = uuid.uuid4()
     with memory_db() as session:
@@ -197,6 +349,53 @@ def test_existing_source_id_reuses_anime(memory_db: sessionmaker) -> None:
     with memory_db() as session:
         assert session.query(Anime).count() == 1
         assert session.query(JikanRecord).one().anime_id == existing_id
+
+
+def _seed_local_anime(memory_db: sessionmaker) -> uuid.UUID:
+    anime_id = uuid.uuid4()
+    with memory_db() as session:
+        session.add(Anime(id=anime_id, canonical_title="星际牛仔"))
+        session.add(
+            BangumiRecord(
+                source_id="253",
+                anime_id=anime_id,
+                name="Cowboy Bebop",
+                name_cn="星际牛仔",
+                summary="Local Bangumi summary",
+                air_date="1998-10-23",
+                score=8.6,
+                tags=["Action", "科幻"],
+                url="https://bgm.example/253",
+            )
+        )
+        session.add(
+            JikanRecord(
+                source_id="1",
+                anime_id=anime_id,
+                title="Cowboy Bebop",
+                title_english="Cowboy Bebop",
+                title_japanese="カウボーイビバップ",
+                title_synonyms=["星际牛仔"],
+                synopsis="Local Jikan summary",
+                year=1998,
+                score=8.4,
+                tags=["Action", "Drama"],
+                url="https://jikan.example/1",
+            )
+        )
+        session.add(
+            MoegirlRecord(
+                source_id="651317",
+                anime_id=anime_id,
+                page_id=651317,
+                page_key="Cowboy_Bebop",
+                title="Cowboy Bebop",
+                tags=["Action", "测试分类"],
+                url="https://moegirl.example/651317",
+            )
+        )
+        session.commit()
+    return anime_id
 
 
 def _bangumi_subject() -> BangumiSubject:

@@ -6,11 +6,13 @@ platforms = ["win-64"]
 version = "0.1.0"
 
 [tasks]
-serve = "python -m src"
-lint = "ruff check src/"
+serve = ".pixi/envs/default/python.exe -m src"
+lint = ".pixi/envs/default/Scripts/ruff.exe check src/"
+pytest = ".pixi/envs/default/python.exe -m pytest"
+demo = ".pixi/envs/default/python.exe scripts/seed_demo.py"
 inspect = "npx @modelcontextprotocol/inspector"
 code = "code ."
-clean-db = "python -c \"import pathlib; pathlib.Path('watchthisanime.db').unlink(missing_ok=True)\""
+clean-db = ".pixi/envs/default/python.exe -c \"import pathlib; pathlib.Path('watchthisanime.db').unlink(missing_ok=True)\""
 
 [dependencies]
 python = ">=3.14.5,<3.15"

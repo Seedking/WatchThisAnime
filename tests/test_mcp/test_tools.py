@@ -8,10 +8,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from src.mcp.tools import record_user_interaction as record_tool
 from src.mcp.tools.record_user_interaction import record_user_interaction
 from src.mcp.tools import search_anime as search_tool
 from src.mcp.tools.search_anime import search_anime
 from src.services import interaction_service, user_service
+from src.services.interaction_service import InteractionError
 from src.services.search_service import SearchError
 from src.storage.database import Base
 from src.storage.models import Anime, BangumiRecord, TagInteraction
@@ -47,6 +49,16 @@ def anime_id(memory_db: sessionmaker) -> uuid.UUID:
         )
         session.commit()
     return item_id
+
+
+def _assert_error_payload(raw: str, code: str) -> None:
+    payload = json.loads(raw)
+    assert set(payload) == {"ok", "error"}
+    assert payload["ok"] is False
+    assert set(payload["error"]) == {"code", "message"}
+    assert payload["error"]["code"] == code
+    assert isinstance(payload["error"]["message"], str)
+    assert payload["error"]["message"]
 
 
 def test_record_user_interaction_tool_returns_success_json_for_anime(
@@ -89,21 +101,141 @@ def test_record_user_interaction_tool_returns_success_json_for_tag(
         assert session.query(TagInteraction).one().tag == "科幻"
 
 
-def test_record_user_interaction_tool_returns_error_json(
+def test_record_user_interaction_tool_ignores_tag_action(
     memory_db: sessionmaker,
+    anime_id: uuid.UUID,
 ) -> None:
     payload = json.loads(
         record_user_interaction(
             user_id="alice",
-            target_type="anime",
-            target_id="not-uuid",
-            action="viewed",
-            rating=8,
+            target_type="tag",
+            target_id="科幻",
+            action="not-an-anime-action",
+            rating=9,
         )
     )
 
-    assert payload["ok"] is False
-    assert payload["error"]["code"] == "invalid_anime_id"
+    assert payload["ok"] is True
+    assert payload["item"]["score"] == 9
+
+
+def test_record_user_interaction_tool_returns_error_json(
+    memory_db: sessionmaker,
+) -> None:
+    raw_payload = record_user_interaction(
+        user_id="alice",
+        target_type="anime",
+        target_id="not-uuid",
+        action="viewed",
+        rating=8,
+    )
+
+    _assert_error_payload(raw_payload, "invalid_anime_id")
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "code"),
+    [
+        (
+            {
+                "user_id": "   ",
+                "target_type": "anime",
+                "target_id": "not-uuid",
+                "action": "viewed",
+            },
+            "invalid_user",
+        ),
+        (
+            {
+                "user_id": "alice",
+                "target_type": "anime",
+                "target_id": 123,
+                "action": "viewed",
+            },
+            "invalid_anime_id",
+        ),
+        (
+            {
+                "user_id": "alice",
+                "target_type": "anime",
+                "target_id": "not-uuid",
+                "action": None,
+            },
+            "invalid_action",
+        ),
+        (
+            {
+                "user_id": "alice",
+                "target_type": "anime",
+                "target_id": "not-uuid",
+                "action": "viewed",
+                "rating": True,
+            },
+            "invalid_rating",
+        ),
+        (
+            {
+                "user_id": "alice",
+                "target_type": "tag",
+                "target_id": "   ",
+                "action": "viewed",
+                "rating": 8,
+            },
+            "invalid_tag",
+        ),
+        (
+            {
+                "user_id": "alice",
+                "target_type": "tag",
+                "target_id": "科幻",
+                "action": "viewed",
+                "rating": True,
+            },
+            "invalid_score",
+        ),
+        (
+            {
+                "user_id": "alice",
+                "target_type": "unknown",
+                "target_id": "x",
+            },
+            "invalid_target_type",
+        ),
+    ],
+)
+def test_record_user_interaction_tool_error_json_is_stable(
+    memory_db: sessionmaker,
+    kwargs: dict[str, object],
+    code: str,
+) -> None:
+    raw_payload = record_user_interaction(**kwargs)
+
+    _assert_error_payload(raw_payload, code)
+
+
+def test_record_user_interaction_tool_returns_database_error_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_record_interaction(
+        user_id: str,
+        target_type: str,
+        target_id: str,
+        rating: int | None = None,
+        action: str | None = None,
+    ) -> dict[str, object]:
+        raise InteractionError("database_error", "数据库操作失败，请稍后重试")
+
+    monkeypatch.setattr(record_tool, "record_interaction", fail_record_interaction)
+
+    raw_payload = record_user_interaction(
+        user_id="alice",
+        target_type="anime",
+        target_id=str(uuid.uuid4()),
+        action="viewed",
+        rating=8,
+    )
+
+    _assert_error_payload(raw_payload, "database_error")
 
 
 def test_search_anime_tool_returns_compact_json(monkeypatch: pytest.MonkeyPatch) -> None:
